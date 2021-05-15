@@ -1,0 +1,18 @@
+[package]
+name = "pubsub"
+version = "0.1.0"
+authors = ["Eunchul Song <eunchulsong9@gmail.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+tokio = { version = "1", features = ["sync"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+dashmap = "4"
+deadpool-redis = { version = "0.7", features = ["config"] }
+redis = { version = "0.20", default-features = false, features = ["aio", "tokio-comp"] }
+# serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["sync", "rt", "macros"] }

@@ -1,0 +1,52 @@
+[package]
+name = "server"
+version = "0.1.0"
+authors = ["Eunchul Song <eunchulsong9@gmail.com>"]
+edition = "2018"
+
+
+[dependencies]
+serde_json = "1"
+serde = { version = "1", features = ["derive"] }
+chrono = { version = "0.4", features = ["serde"] }
+thiserror = "1"
+sqlx = { version = "0.5.2", features = [ "runtime-actix-rustls", "postgres", "sqlite", "migrate", "chrono", "uuid" ] }
+# HACK: https://github.com/async-graphql/async-graphql/issues/489
+async-graphql = { version = "2.8.3", features = [ "chrono", "uuid", "unblock" ], git="https://github.com/song9446/async-graphql", branch="actix-web-v4-beta"}
+uuid = { version = "0.8", features = ["serde", "v4", "std" ] }
+lazy_static = "*"
+
+async-graphql-actix-web = { version = "2.8.3", git="https://github.com/song9446/async-graphql", branch="actix-web-v4-beta"}
+oxide-auth-actix = "0.1"
+jsonwebtoken = "7"
+bcrypt = "0.9"
+deadpool-redis = { version = "0.7", features = ["config"] }
+redis = { version = "0.20", default-features = false, features = ["tokio-comp"] }
+rand = "0.8"
+actix-rt = "2"
+
+actix-web = "4.0.0-beta.6"
+actix-multipart = "0.4.0-beta.4"
+rusoto_s3 = "0.46.0"
+rusoto_core = "0.46.0"
+bytes = { version = "1.0", features = ["serde"] }
+tokio = { version = "1", features = ["sync"] }
+tokio-util = { version = "0.6", features = ["compat"] }
+
+bincode = "1"
+base64 = "0.13"
+envy = "0.4"
+futures = "0.3"
+
+# pubsub = { path = "./pubsub" }
+
+log = "0.4"
+
+
+[dev-dependencies]
+serial_test = "0.5"
+testcontainers = { version = "0.12", git = "https://github.com/testcontainers/testcontainers-rs" }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+reqwest = { version = "0.11", features = ["multipart", "json", "cookies"] }
+portpicker = "*"
+tempfile = "*"

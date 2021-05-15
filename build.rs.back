@@ -1,0 +1,25 @@
+/*
+#![allow(dead_code)]
+#[path = "src/error.rs"]
+mod error;
+#[path = "src/model.rs"]
+mod model;
+#[path = "src/session.rs"]
+mod session;
+mod utils {
+    #[path = "src/utils/hash.rs"]
+    pub mod utils;
+}
+
+use crate::model::{Mutation, Query, Schema};
+use async_graphql::EmptySubscription;
+use std::fs;
+
+fn main() {
+    // Tell Cargo that if the given file changes, to rerun this build script.
+    let schema = Schema::build(Query, Mutation, EmptySubscription).finish();
+    fs::write("./schema.graphql", schema.sdl()).unwrap();
+
+    println!("cargo:rerun-if-changed=src/model.rs");
+}
+*/

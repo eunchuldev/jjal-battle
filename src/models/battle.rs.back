@@ -1,0 +1,353 @@
+use crate::error;
+use crate::pools::{db::DbPool, redis::{RedisPool, RedisConn, cmd}};
+use crate::session::{create_session, Session};
+use crate::utils::{
+    datetime::DateTime,
+    hash::{hash_password, verify_password},
+};
+use super::{card::Card, user::User};
+use pubsub::PubSub;
+
+use async_graphql::{
+    connection::{Connection, Edge, EmptyFields},
+    validators::IntRange,
+    Context, Enum, Error as GraphqlError, ErrorExtensions, InputObject, Object, SimpleObject,
+};
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
+use crate::constants::{MAX_DATETIME, MIN_DATETIME, USER_CARDS_MAX_PAGE_SIZE, DUEL_BATTLE_TTL_SECONDS};
+
+pub use error::{ServerError, UserError};
+
+const VOTE_QUEUE_KEY: &[u8] = b"queue:duel-battle";
+
+#[derive(sqlx::Type, Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, Enum)]
+#[sqlx(type_name = "battlestate")]
+pub enum DuelBattleState {
+    #[sqlx(rename = "matching")]
+    #[serde(rename = "matching")]
+    Matching,
+    #[sqlx(rename = "fighting")]
+    #[serde(rename = "fighting")]
+    Fighting,
+    #[sqlx(rename = "finished")]
+    #[serde(rename = "finished")]
+    Finished,
+}
+
+#[derive(sqlx::FromRow, Clone, Debug, Deserialize, Serialize, PartialEq)]
+pub struct DuelBattlePgRow {
+    pub id: Uuid,
+
+    pub voteup1: i32,
+    pub voteup2: i32,
+
+    pub state: DuelBattleState,
+
+    pub created_at: DateTime,
+    pub expired_at: Option<DateTime>,
+
+    pub rating: f64,
+
+    pub card1: sqlx::types::Json<Card>,
+    pub user1: sqlx::types::Json<User>,
+
+    pub card2: Option<sqlx::types::Json<Card>>,
+    pub user2: Option<sqlx::types::Json<User>>,
+}
+
+
+#[derive(sqlx::FromRow, Clone, Debug, Deserialize, Serialize, PartialEq)]
+pub struct DuelBattle {
+    pub id: Uuid,
+
+    pub voteup1: i32,
+    pub voteup2: i32,
+
+    pub state: DuelBattleState,
+
+    pub created_at: DateTime,
+    pub expired_at: Option<DateTime>,
+
+    pub rating: f64,
+
+    pub card1: Card,
+    pub user1: User,
+
+    pub card2: Option<Card>,
+    pub user2: Option<User>,
+}
+
+impl From<DuelBattlePgRow> for DuelBattle {
+    fn from(row: DuelBattlePgRow) -> Self {
+        let DuelBattlePgRow { id, voteup1, voteup2, state, created_at, expired_at, rating, card1, user1, card2, user2, } = row;
+        Self { id, voteup1, voteup2, state, created_at, expired_at, rating, card1: card1.0, user1: user1.0, card2: card2.map(|c| c.0), user2: user2.map(|u| u.0), }
+    }
+}
+
+#[Object]
+impl DuelBattle {
+    async fn id(&self) -> Uuid {
+        self.id
+    }
+    async fn state(&self) -> DuelBattleState {
+        self.state
+    }
+    async fn created_at(&self) -> &DateTime {
+        &self.created_at
+    }
+    async fn expired_at(&self) -> &Option<DateTime> {
+        &self.expired_at
+    }
+    async fn card1(
+        &self,
+        ctx: &Context<'_>,
+    ) -> Result<Card, GraphqlError> {
+        let dbpool = ctx.data::<DbPool>()?;
+        Ok(sqlx::query_as::<_, Card>("SELECT * FROM cards WHERE id = $1")
+            .bind(self.id)
+            .fetch_one(dbpool)
+            .await?)
+    }
+}
+
+async fn create_or_match_duel_battle(dbpool: &DbPool, card_id: Uuid, user_id: Uuid) -> Result<DuelBattle, GraphqlError> {
+    let battle = sqlx::query_as::<_, DuelBattlePgRow>(r#"
+            WITH match AS (
+                UPDATE duel_battles b
+                SET card_id2 = $1, user_id2 = $2, expired_at = NOW() + $3 * INTERVAL '1' SECOND, state = 'fighting'
+                WHERE 
+                    b.id IN (
+                        SELECT id FROM (
+                            (SELECT b.id, c.rating - b.rating AS rating_diff
+                            FROM duel_battles b
+                            INNER JOIN cards c ON c.id = $1 AND c.owner_id = $2 
+                            WHERE c.rating > b.rating AND b.state = 'matching' AND b.user_id1 != $2
+                            ORDER BY b.rating DESC LIMIT 1)
+                            UNION
+                            (SELECT b.id, b.rating - c.rating AS rating_diff
+                            FROM duel_battles b
+                            INNER JOIN cards c ON c.id = $1 AND c.owner_id = $2
+                            WHERE c.rating <= b.rating AND b.state = 'matching' AND b.user_id1 != $2
+                            ORDER BY b.rating LIMIT 1)
+                        ) x
+                        WHERE NOT EXISTS (SELECT 1 FROM duel_battles WHERE state != 'finished' AND (card_id1 = $1 OR card_id2 = $1))
+                        ORDER BY rating_diff LIMIT 1
+                    )
+                RETURNING b.*
+            ),
+            new_battle AS (
+                INSERT INTO duel_battles as b (card_id1, user_id1, rating, state)
+                SELECT $1, $2, c.rating, 'matching' 
+                FROM cards c WHERE 
+                    c.id = $1 AND c.owner_id = $2 AND
+                    NOT EXISTS (SELECT 1 FROM match) AND
+                    NOT EXISTS (SELECT 1 FROM duel_battles WHERE state != 'finished' AND (card_id1 = $1 OR card_id2 = $1))
+                RETURNING b.*
+            )
+            SELECT l.*,  
+            FROM ((SELECT * FROM match) UNION (SELECT * FROM new_battle)) l
+            LEFT JOIN cards c1 ON c1.id = l.card_id1
+            LEFT JOIN cards c2 ON c2.id = l.card_id2
+            LEFT JOIN users u1 ON u1.id = l.user_id1
+            LEFT JOIN users u2 ON u2.id = l.user_id2
+        "#)
+        .bind(card_id)
+        .bind(user_id)
+        .bind(DUEL_BATTLE_TTL_SECONDS)
+        .fetch_optional(dbpool)
+        .await?.ok_or_else(|| GraphqlError::new("another battle in progress"))?;
+    Ok(battle.into())
+}
+
+async fn start_duel_battle(redis: &mut RedisConn, duel_battle: &DuelBattle) -> Result<(), GraphqlError> {
+    let mut key = b"store:duel-battle:".to_vec();
+    key.extend(duel_battle.id.as_bytes());
+    cmd("HSET")
+        .arg(&[
+            key.as_slice(),
+            b"expired_at", 
+            bincode::serialize(&duel_battle.expired_at)?.as_ref(),
+            b"vote1", 
+            &duel_battle.voteup1.to_string().as_bytes(),
+            b"vote2", 
+            &duel_battle.voteup2.to_string().as_bytes(),
+            b"card1", 
+            bincode::serialize(&card1)?.as_ref(),
+            b"card2", 
+            bincode::serialize(&card2)?.as_ref(),
+        ])
+        .execute_async(redis)
+        .await?;
+    cmd("ZADD")
+        .arg(&[
+            VOTE_QUEUE_KEY,
+            b"0",
+            duel_battle.id.as_bytes(),
+        ])
+        .execute_async(redis)
+        .await?;
+    Ok(())
+}
+async fn finish_duel_battle(dbpool: &DbPool, redis: &mut RedisConn, duel_battle: &DuelBattle) -> Result<(), GraphqlError> {
+    let mut key = b"store:duel-battle:".to_vec();
+    key.extend(duel_battle.id.as_bytes());
+    cmd("HMGET")
+        .arg(&[
+            key.as_slice(),
+            b"vote1",
+            b"vote2",
+        ])
+        .execute_async(redis)
+        .await?;
+
+    cmd("DEL")
+        .arg(&[
+            key.as_slice(),
+        ])
+        .execute_async(redis)
+        .await?;
+}
+
+#[derive(Serialize, Deserialize)]
+enum DuelBattleEvent {
+    Match {
+        duelBattle: DuelBattle,
+    }
+    Vote {
+        card_idx: u8,
+        vote: i32,
+    }
+}
+
+async fn vote_duel_battle(redis: &mut RedisConn, duel_battle_id: Uuid, card_idx: u8) -> Result<(), GraphqlError> {
+    let mut vote_key  = [b'v', b'o', b't', b'e', b'1'];
+    vote_key[4] = card_idx;
+    let mut key = b"store:duel-battle:".to_vec();
+    key.extend(duel_battle_id.as_bytes());
+    let vote: i32 = cmd("HINCRBY")
+        .arg(&[
+            key.as_slice(),
+            &vote_key,
+            b"1",
+        ])
+        .query_async(redis)
+        .await?;
+    let mut key = b"event:duel-battle:vote:".to_vec();
+    key.extend(duel_battle_id.as_bytes());
+    cmd("PUBLISH")
+        .arg(&[
+            key.as_slice(),
+            bincode::serialize(&DuelBattleVoteEvent {
+                card_idx, 
+                vote,
+            })?.as_slice(),
+        ])
+        .execute_async(redis)
+        .await?;
+    Ok(())
+}
+
+async fn subscribe_duel_battle(pubsub: &PubSub<Uuid, DuelBattle>, duel_battle_id: Uuid) -> impl Stream<Item = DuelBattle> {
+    pubsub.subscribe_stream(&duel_battle_id)
+}
+
+#[derive(InputObject)]
+pub struct StartDuelBattleInput {
+    pub card_id: Uuid,
+}
+
+#[derive(SimpleObject)]
+pub struct StartDuelBattleOutput {
+    pub duel_battle: DuelBattle,
+}
+
+#[derive(Default)]
+pub struct DuelBattleMutation;
+
+#[Object]
+impl DuelBattleMutation {
+    async fn start_duel_battle(
+        &self,
+        ctx: &Context<'_>,
+        input: StartDuelBattleInput,
+    ) -> Result<StartDuelBattleOutput, GraphqlError> {
+        let session: &Session = ctx
+            .data_opt::<Session>()
+            .ok_or_else(|| UserError::NeedLogin.extend())?;
+        let StartDuelBattleInput {
+            card_id,
+        } = input;
+        let dbpool = ctx.data::<DbPool>()?;
+        let redispool = ctx.data::<RedisPool>()?;
+
+        let duel_battle = create_or_match_duel_battle(dbpool, card_id, session.user_id).await?;
+
+        if duel_battle.state()
+
+
+        Ok(StartDuelBattleOutput {
+            duel_battle
+        })
+    }
+}
+
+
+
+#[cfg(test)]
+pub mod tests {
+    use super::*;
+    use crate::utils::test::*;
+    use crate::{models, routes, session};
+    use actix_web::{App, HttpServer};
+    use futures::TryFutureExt;
+
+    #[derive(serde::Serialize)]
+    struct Query {
+        query: String,
+    }
+    impl Query {
+        fn new(q: &str) -> Self {
+            Query {
+                query: q.to_string(),
+            }
+        }
+    }
+
+    #[actix_rt::test]
+    async fn test_create_or_match_battle() {
+        let docker = TestDocker::new();
+        let db = docker.run().await;
+        let user_ids: Vec<_> = (0..4).map(|_| uuid::Uuid::new_v4()).collect();
+        let card_ids: Vec<_> = (0..4).map(|_| uuid::Uuid::new_v4()).collect();
+
+        let dbpool = db.pgpool;
+
+        for i in (0usize..4) {
+            sqlx::query("INSERT INTO users (id, nickname, email, password, points) VALUES ($1, 'a', $2, 'c', 200)")
+                .bind(user_ids[i])
+                .bind(i.to_string())
+                .execute(&dbpool)
+                .await
+                .unwrap();
+            sqlx::query("INSERT INTO cards (rating, image_path, name, id, owner_id) VALUES ($1, $2, $3, $4, $5)")
+                .bind(i as f32)
+                .bind(i.to_string())
+                .bind(i.to_string())
+                .bind(card_ids[i])
+                .bind(user_ids[i])
+                .execute(&dbpool)
+                .await
+                .unwrap();
+        }
+        let res: Vec<DuelBattle> =
+            futures::future::join_all((0..4).map(|i| create_or_match_duel_battle(&dbpool, card_ids[i], user_ids[i])).collect::<Vec<_>>())
+                .await
+                .into_iter()
+                .map(|r| r.unwrap())
+                .collect();
+        let s: std::collections::HashSet<_> = res.iter().map(|r| r.id).collect();
+        assert_eq!(s.len(), 2);
+    }
+}
