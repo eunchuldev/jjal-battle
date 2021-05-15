@@ -65,7 +65,7 @@ mod tests {
         let query = r#"{"query":"mutation { register(input: { email:\"a\", password:\"b\", nickname:\"c\" }) { user { id } } }"}"#;
         let req = test::TestRequest::post()
             .insert_header(("Content-Type", "application/json"))
-            .uri("/graphql")
+            .uri("/api/graphql")
             .set_payload(query)
             .to_request();
         let resp = test::call_service(&mut app, req).await;
@@ -96,7 +96,7 @@ mod tests {
         let query = r#"{"query":"mutation { register(input: { email:\"a\", password:\"b\", nickname:\"c\" }) { user { id } } }"}"#;
         let req = test::TestRequest::post()
             .insert_header(("Content-Type", "application/json"))
-            .uri("/graphql")
+            .uri("/api/graphql")
             .set_payload(query)
             .to_request();
         let resp = test::call_service(&mut app, req).await;
@@ -130,7 +130,7 @@ mod tests {
         );
         let req = test::TestRequest::post()
             .insert_header(("Content-Type", "application/json"))
-            .uri("/graphql")
+            .uri("/api/graphql")
             .set_payload(query)
             .to_request();
         let resp = test::call_service(&mut app, req).await;
@@ -145,7 +145,7 @@ mod tests {
         let req = test::TestRequest::post()
             .insert_header(("Content-Type", "application/json"))
             .insert_header(("COOKIE", cookie_header.split(";").next().unwrap()))
-            .uri("/graphql")
+            .uri("/api/graphql")
             .set_payload(query)
             .to_request();
         let resp = test::call_service(&mut app, req).await;

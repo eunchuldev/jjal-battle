@@ -47,6 +47,7 @@ pub async fn create_session(
         session_id,
         expire_at.format("%a, %d %b %Y %H:%M:%S GMT")
     );
+    println!("add header");
     ctx.append_http_header("Set-Cookie", session_cookie_header);
     cmd("SETEX")
         .arg(build_session_key(&session_id))
