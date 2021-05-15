@@ -10,9 +10,8 @@ jobs:
     steps:
       - uses: actions/checkout@v2
         with:
-          path: "eunggoljjal-battle-server"
+          path: "jjal-battle"
       - uses: docker/setup-buildx-action@v1
-      - run: npm install -g bats
       - uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
