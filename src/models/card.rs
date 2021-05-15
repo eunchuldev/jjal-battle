@@ -344,7 +344,7 @@ pub mod tests {
             .cookie_store(true)
             .build()
             .unwrap();
-        let url = format!("http://localhost:{}/graphql", port);
+        let url = format!("http://localhost:{}/api/graphql", port);
 
         let res = client.post(&url).json(&Query::new("mutation { register(input: { email:\"a\", password:\"b\", nickname:\"c\" }) { user { id } } }")).send().await.unwrap();
         /*assert_eq!(res.text().await.unwrap(), "");

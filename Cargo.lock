@@ -3678,7 +3678,7 @@ dependencies = [
 [[package]]
 name = "testcontainers"
 version = "0.12.0"
-source = "git+https://github.com/testcontainers/testcontainers-rs#e36491f7e6fc84e0de15be148f87f1ded06e0f41"
+source = "git+https://github.com/testcontainers/testcontainers-rs?branch=dev#e36491f7e6fc84e0de15be148f87f1ded06e0f41"
 dependencies = [
  "async-trait",
  "futures",

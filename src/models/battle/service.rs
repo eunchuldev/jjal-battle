@@ -437,7 +437,6 @@ pub async fn expire_duel_battles(dbpool: &DbPool, redispool: &RedisPool) -> Resu
 #[cfg(test)]
 pub mod tests {
     use super::*;
-    use super::*;
     use crate::utils::test::*;
 
     #[actix_rt::test]
@@ -514,8 +513,12 @@ pub mod tests {
         let duel_battle1 = get_duel_battle(&dbpool, &redispool, duel_battles[0].id)
             .await
             .unwrap();
-        finish_duel_battle(&dbpool, &redispool, duel_battle.id).await;
-        finish_duel_battle(&dbpool, &redispool, duel_battle2.id).await;
+        finish_duel_battle(&dbpool, &redispool, duel_battle.id)
+            .await
+            .unwrap();
+        finish_duel_battle(&dbpool, &redispool, duel_battle2.id)
+            .await
+            .unwrap();
         let err = sample_duel_battle(&redispool).await.unwrap_err();
         assert!(matches!(err, Error::NoBattleAvailable));
         let duel_battle2 = get_duel_battle(&dbpool, &redispool, duel_battles[0].id)
